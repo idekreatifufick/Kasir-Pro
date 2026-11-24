@@ -8,15 +8,23 @@
   <!-- Open Graph & Social Media Preview Tags -->
   <meta property="og:title" content="Sistem Kasir & Manajemen Usaha" />
   <meta property="og:description" content="Kelola usaha & kasir jadi lebih rapi, cepat, dan real-time! Mendukung cetak struk Bluetooth 58mm, kirim struk & laporan via WhatsApp, Kas Harian & Kas Utama Owner." />
-  <meta property="og:image" content="https://drive.google.com/file/d/1wDMK5bM0nAGnaUExReMYWphqkXDivBPM/view?usp=drive_link" />
+  <meta property="og:image" content="https://lh3.googleusercontent.com/d/1wDMK5bM0nAGnaUExReMYWphqkXDivBPM" />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Sistem Kasir & Manajemen Usaha" />
   <meta name="twitter:description" content="Kelola usaha & kasir jadi lebih rapi, cepat, dan real-time! Mendukung cetak struk Bluetooth 58mm, kirim struk & laporan via WhatsApp, Kas Harian & Kas Utama Owner." />
-  <meta name="twitter:image" content="https://drive.google.com/file/d/1wDMK5bM0nAGnaUExReMYWphqkXDivBPM/view?usp=drive_link" />
+  <meta name="twitter:image" content="https://lh3.googleusercontent.com/d/1wDMK5bM0nAGnaUExReMYWphqkXDivBPM" />
 
   <link id="pwa-manifest" rel="manifest" href="" />
   <meta name="theme-color" content="#B91C1C" />
+  
+  <!-- PWA Meta Tags: Mendukung iOS (iPhone/iPad), Android, Desktop & Tablet -->
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="KasirPro" />
+  <link rel="apple-touch-icon" href="https://lh3.googleusercontent.com/d/1wDMK5bM0nAGnaUExReMYWphqkXDivBPM" />
+  
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -152,15 +160,25 @@
         const manifest = {
           name: "Sistem Kasir & Manajemen Usaha",
           short_name: "KasirPro",
-          start_url: ".",
+          start_url: "./",
           display: "standalone",
           background_color: "#F8FAFC",
           theme_color: "#B91C1C",
-          icons: [{
-            src: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23DC2626'/><text x='50' y='64' font-size='48' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'>K</text></svg>",
-            sizes: "192x192",
-            type: "image/svg+xml"
-          }]
+          description: "Sistem Kasir & Manajemen Usaha (POS) Real-Time",
+          icons: [
+            {
+              src: "https://lh3.googleusercontent.com/d/1wDMK5bM0nAGnaUExReMYWphqkXDivBPM",
+              sizes: "192x192",
+              type: "image/jpeg",
+              purpose: "any maskable"
+            },
+            {
+              src: "https://lh3.googleusercontent.com/d/1wDMK5bM0nAGnaUExReMYWphqkXDivBPM",
+              sizes: "512x512",
+              type: "image/jpeg",
+              purpose: "any maskable"
+            }
+          ]
         };
         const manifestEl = document.getElementById("pwa-manifest");
         if (manifestEl) {
@@ -169,7 +187,10 @@
         if ("serviceWorker" in navigator) {
           const swCode = "self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));self.addEventListener('fetch',e=>{});";
           const blob = new Blob([swCode], { type: "application/javascript" });
-          navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(() => {});
+          const swUrl = URL.createObjectURL(blob);
+          navigator.serviceWorker.register(swUrl).catch((err) => {
+            console.log("PWA Ready (GitHub Pages Mode)", err);
+          });
         }
       } catch (_) {}
     })();
