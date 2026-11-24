@@ -138,7 +138,7 @@
     const IS_PREVIEW = false; // Ubah ke false saat rilis ke publik
 
     const firebaseConfig = {
-      apiKey: "AIzaSyCI_bZiMcJQ1AQBNexRdUnlXUxFPxY_4mk",
+     apiKey: "AIzaSyCI_bZiMcJQ1AQBNexRdUnlXUxFPxY_4mk",
   authDomain: "aplikasi-kasir-pro-v1.firebaseapp.com",
   projectId: "aplikasi-kasir-pro-v1",
   storageBucket: "aplikasi-kasir-pro-v1.firebasestorage.app",
@@ -184,12 +184,11 @@
         if (manifestEl) {
           manifestEl.href = "data:application/manifest+json;charset=utf-8," + encodeURIComponent(JSON.stringify(manifest));
         }
+        
+        // MEMANGGIL FILE sw.js FISIK
         if ("serviceWorker" in navigator) {
-          const swCode = "self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));self.addEventListener('fetch',e=>{});";
-          const blob = new Blob([swCode], { type: "application/javascript" });
-          const swUrl = URL.createObjectURL(blob);
-          navigator.serviceWorker.register(swUrl).catch((err) => {
-            console.log("PWA Ready (GitHub Pages Mode)", err);
+          navigator.serviceWorker.register('./sw.js').catch((err) => {
+            console.log("PWA SW Register Error", err);
           });
         }
       } catch (_) {}
@@ -1771,7 +1770,860 @@
       window.goPage("pos");
     };
 
-    // BATIK / RELOAD LOGIC
+    window.addToCart = (menuId) => {
+      const m = state.menus.find(x => x.id === menuId);
+      if (!m) return;
+      const existing = state.cart.find(c => c.menuId === menuId);
+      if (existing) existing.qty += 1;
+      else state.cart.push({ menuId: m.id, name: m.name, price: m.price, originalPrice: m.price, qty: 1, note: "" });
+      showToast("Ditambahkan ke Keranjang", `${m.name} (+1)`, "success");
+      render();
+    };
+    window.changeCartQty = (idx, delta) => {
+      if (!state.cart[idx]) return;
+      state.cart[idx].qty += delta;
+      if (state.cart[idx].qty <= 0) state.cart.splice(idx, 1);
+      render();
+    };
+    window.removeCartItem = (idx) => { state.cart.splice(idx, 1); render(); };
+    window.updateCartNote = (idx, val) => { if (state.cart[idx]) state.cart[idx].note = val; };
+    window.promptEditCartPrice = (idx) => {
+      const item = state.cart[idx];
+      if (!item) return;
+      openModal(`
+        <form id="edit-price-form" class="bg-white rounded-3xl max-w-xs w-full p-6 shadow-2xl space-y-4">
+          <div class="flex justify-between items-center">
+            <h3 class="font-extrabold text-sm text-slate-900">Edit Harga Satuan</h3>
+            <button type="button" onclick="window.closeModal()" class="p-1 rounded-lg bg-slate-100"><i data-lucide="x" class="w-4 h-4"></i></button>
+          </div>
+          <p class="text-xs text-slate-500">${esc(item.name)}</p>
+          <input id="edit-price-input" type="number" min="0" required value="${item.price}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm font-bold" />
+          <button type="submit" class="btn-micro w-full py-2.5 rounded-xl theme-gradient-btn text-white text-xs font-bold">Simpan Harga</button>
+        </form>
+      `);
+      document.getElementById("edit-price-form").onsubmit = (e) => {
+        e.preventDefault();
+        const val = Number(document.getElementById("edit-price-input").value);
+        if (!isNaN(val) && val >= 0) {
+          item.price = val;
+          window.closeModal();
+          showToast("Harga Diperbarui", `${item.name} menjadi ${rp(item.price)}`, "info");
+          render();
+        }
+      };
+    };
+    window.setDiscount = (v) => { state.discount = Math.max(0, Number(v || 0)); render(); };
+    window.clearCart = () => { state.cart = []; state.discount = 0; showToast("Pesanan Dibatalkan", "Keranjang telah dikosongkan.", "warning"); render(); };
+
+    window.processCheckout = async () => {
+      const subtotal = state.cart.reduce((s, c) => s + (c.price * c.qty), 0);
+      const total = Math.max(0, subtotal - Number(state.discount || 0));
+      if (state.paymentMethod === "Tunai" && state.cashReceived < total) {
+        return showToast("Uang Kurang", "Nominal uang diterima lebih kecil dari total bayar.", "error");
+      }
+      const now = new Date();
+      const inv = "SR-" + now.toISOString().slice(0,10).replace(/-/g, "") + "-" + String(Math.floor(1000 + Math.random() * 9000));
+      const trx = {
+        invoiceNo: inv,
+        items: state.cart.map(c => ({ menuId: c.menuId, name: c.name, price: c.price, qty: c.qty, note: c.note })),
+        subtotal, discount: state.discount, total,
+        cashReceived: state.paymentMethod === "Tunai" ? state.cashReceived : total,
+        change: state.paymentMethod === "Tunai" ? Math.max(0, state.cashReceived - total) : 0,
+        paymentMethod: state.paymentMethod,
+        cashierName: state.user?.fullName || state.user?.username || "Kasir",
+        status: "completed",
+        date: now.toISOString().slice(0, 10),
+        createdAt: now.toISOString()
+      };
+      const saved = await dbAdd("transactions", trx);
+      await dbAdd("cash_flows", {
+        trxId: saved.id,
+        type: "in",
+        title: `Penjualan Kasir (${inv})`,
+        amount: trx.total,
+        note: `Metode: ${trx.paymentMethod}`,
+        photoUrl: "",
+        status: "active",
+        recordedBy: trx.cashierName,
+        date: trx.date,
+        createdAt: trx.createdAt
+      });
+      state.cart = [];
+      state.discount = 0;
+      window.closeModal();
+      showToast("Transaksi & Kas Masuk Tercatat!", `Struk ${inv} (${rp(trx.total)}) masuk ke Kas Harian.`, "success");
+      window.openReceiptModal(saved);
+      render();
+    };
+
+    window.cancelTransaction = (id) => {
+      showReasonDialog({
+        title: "Batalkan Transaksi",
+        subtitle: "Masukkan alasan pembatalan transaksi agar tercatat di riwayat.",
+        placeholder: "Contoh: Salah input menu / pelanggan membatalkan pesanan",
+        confirmText: "Batalkan Transaksi",
+        onSubmit: async (reason) => {
+          await dbUpdate("transactions", id, { status: "cancelled", cancelReason: reason });
+          const linkedCash = state.cashFlows.find(c => c.trxId === id && c.status !== "cancelled");
+          if (linkedCash) {
+            await dbUpdate("cash_flows", linkedCash.id, { status: "cancelled", cancelReason: `Transaksi dibatalkan: ${reason}` });
+          }
+          showToast("Transaksi & Kas Masuk Dibatalkan", `Alasan: ${reason}`, "warning");
+          render();
+        }
+      });
+    };
+
+    window.printReceipt = () => {
+      const t = state.lastReceipt;
+      if (!t) return;
+      const headerName = state.settings.receiptHeaderName || state.settings.businessName;
+      const pa = document.getElementById("print-area");
+      pa.classList.remove("hidden");
+      pa.innerHTML = `
+        <div style="max-width:300px;margin:auto;font-family:monospace;font-size:12px;">
+          ${state.settings.receiptShowLogo && state.settings.logoUrl ? `<div style="text-align:center;margin-bottom:6px;"><img src="${esc(state.settings.logoUrl)}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;margin:auto;" /></div>` : ""}
+          <h3 style="text-align:center;margin:0;">${esc(headerName)}</h3>
+          ${state.settings.receiptAddress ? `<p style="text-align:center;margin:2px 0;font-size:11px;">${esc(state.settings.receiptAddress)}</p>` : ""}
+          <p style="text-align:center;margin:4px 0;">${esc(t.invoiceNo)}<br/>${esc(t.date)}${state.settings.receiptShowCashier !== false ? ` | Kasir: ${esc(t.cashierName)}` : ""}</p>
+          <hr/>
+          ${t.items.map(i => `<div>${esc(i.name)} x${i.qty} <span style="float:right">${rp(i.price * i.qty)}</span></div>`).join("")}
+          <hr/>
+          ${Number(t.discount || 0) > 0 ? `<div>Diskon<span style="float:right">-${rp(t.discount)}</span></div>` : ""}
+          <div><b>TOTAL (${esc(t.paymentMethod)})</b><span style="float:right"><b>${rp(t.total)}</b></span></div>
+          ${t.paymentMethod === "Tunai" ? `<div>Tunai<span style="float:right">${rp(t.cashReceived)}</span></div><div>Kembali<span style="float:right">${rp(t.change)}</span></div>` : ""}
+          <p style="text-align:center;margin-top:12px;">${esc(state.settings.receiptFooter || "Terima Kasih Sudah Berbelanja!")}</p>
+        </div>
+      `;
+      window.print();
+      pa.classList.add("hidden");
+      triggerAutoForwardReceiptToOwnerWa(t);
+    };
+
+    window.openMenuFormModal = (editId = null) => {
+      const m = editId ? state.menus.find(x => x.id === editId) : null;
+      const cats = state.categories.length ? state.categories.map(c => c.name) : ["Makanan", "Minuman", "Lainnya"];
+      openModal(`
+        <form onsubmit="window.saveMenu(event, '${editId || ''}')" class="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+          <div class="flex justify-between items-center">
+            <h3 class="font-extrabold text-base">${m ? "Edit Menu" : "Tambah Menu Baru"}</h3>
+            <button type="button" onclick="window.closeModal()" class="p-1.5 rounded-xl bg-slate-100"><i data-lucide="x" class="w-4 h-4"></i></button>
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Nama Menu</label>
+            <input id="menu-name" required value="${esc(m?.name || "")}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm" />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-bold mb-1">Harga (Rp)</label>
+              <input id="menu-price" type="number" required value="${m?.price || ""}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm" />
+            </div>
+            <div>
+              <label class="block text-xs font-bold mb-1">Kategori</label>
+              <select id="menu-cat" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm">
+                ${cats.map(c => `<option value="${esc(c)}" ${m?.category === c ? "selected" : ""}>${esc(c)}</option>`).join("")}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Foto Menu (URL atau Upload)</label>
+            <input id="menu-img" value="${esc(m?.imageUrl || "")}" placeholder="https://..." class="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-xs mb-2" />
+            <input type="file" accept="image/*" onchange="window.handleImageUpload(this, 'menu-img')" class="text-xs" />
+          </div>
+          <button type="submit" class="btn-micro w-full py-3 rounded-xl theme-gradient-btn text-white font-bold text-sm">Simpan Menu</button>
+        </form>
+      `);
+    };
+
+    window.saveMenu = async (e, editId) => {
+      e.preventDefault();
+      const data = {
+        name: document.getElementById("menu-name").value.trim(),
+        price: Number(document.getElementById("menu-price").value),
+        category: document.getElementById("menu-cat").value,
+        imageUrl: document.getElementById("menu-img").value.trim(),
+        isActive: true
+      };
+      if (editId) await dbUpdate("menus", editId, data);
+      else await dbAdd("menus", { ...data, createdAt: new Date().toISOString() });
+      window.closeModal();
+      showToast("Menu Tersimpan", `${data.name} berhasil disimpan.`);
+      render();
+    };
+
+    window.deleteMenu = (id) => {
+      showConfirmDialog({
+        title: "Hapus Menu",
+        message: "Yakin ingin menghapus menu ini dari daftar jualan?",
+        confirmText: "Ya, Hapus",
+        onConfirm: async () => {
+          await dbDelete("menus", id);
+          showToast("Menu Dihapus", "Item telah dihapus dari daftar.", "warning");
+          render();
+        }
+      });
+    };
+
+    window.openCategoryModal = () => {
+      openModal(`
+        <div class="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
+          <div class="flex justify-between items-center">
+            <h3 class="font-extrabold text-base">Atur Kategori</h3>
+            <button onclick="window.closeModal()" class="p-1.5 rounded-xl bg-slate-100"><i data-lucide="x" class="w-4 h-4"></i></button>
+          </div>
+          <form onsubmit="window.addCategory(event)" class="flex gap-2">
+            <input id="new-cat-name" required placeholder="Nama kategori baru" class="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-sm" />
+            <button type="submit" class="btn-micro px-4 py-2 rounded-xl theme-gradient text-white text-xs font-bold">Tambah</button>
+          </form>
+          <div class="space-y-2 max-h-56 overflow-y-auto">
+            ${state.categories.map(c => `
+              <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border">
+                <span class="text-xs font-bold">${esc(c.name)}</span>
+                <button onclick="window.deleteCategory('${c.id}')" class="text-rose-600 text-xs font-bold">Hapus</button>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `);
+    };
+    window.addCategory = async (e) => {
+      e.preventDefault();
+      const name = document.getElementById("new-cat-name").value.trim();
+      if (!name) return;
+      await dbAdd("categories", { name });
+      showToast("Kategori Ditambahkan", name);
+      window.openCategoryModal();
+      render();
+    };
+    window.deleteCategory = async (id) => {
+      await dbDelete("categories", id);
+      window.openCategoryModal();
+      render();
+    };
+
+    window.viewPhotoPreview = (source, id) => {
+      const list = source === "ownerCash" ? state.ownerCashFlows : state.cashFlows;
+      const item = list.find(x => x.id === id);
+      if (!item || !item.photoUrl) return;
+      openModal(`
+        <div class="bg-white rounded-3xl max-w-md w-full p-5 shadow-2xl space-y-3">
+          <div class="flex justify-between items-center">
+            <h3 class="font-extrabold text-sm">${esc(item.title)}</h3>
+            <button onclick="window.closeModal()" class="p-1.5 rounded-xl bg-slate-100"><i data-lucide="x" class="w-4 h-4"></i></button>
+          </div>
+          <img src="${esc(item.photoUrl)}" class="w-full max-h-[65vh] object-contain rounded-2xl bg-slate-100" />
+        </div>
+      `);
+    };
+
+    window.openCashModal = (type, editId = null) => {
+      const existing = editId ? state.cashFlows.find(x => x.id === editId) : null;
+      openModal(`
+        <form onsubmit="window.saveCash(event, '${type}', '${editId || ''}')" class="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+          <div class="flex justify-between items-center">
+            <h3 class="font-extrabold text-base">${existing ? "Edit Catatan Kas" : (type === 'in' ? 'Catat Kas Masuk' : 'Catat Kas Keluar')}</h3>
+            <button type="button" onclick="window.closeModal()" class="p-1.5 rounded-xl bg-slate-100"><i data-lucide="x" class="w-4 h-4"></i></button>
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Keterangan</label>
+            <input id="cash-title" required value="${esc(existing?.title || "")}" placeholder="Contoh: Belanja bahan baku" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Nominal (Rp)</label>
+            <input id="cash-amount" type="number" required min="1" value="${existing?.amount || ""}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Catatan (Opsional)</label>
+            <input id="cash-note" value="${esc(existing?.note || "")}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Upload Foto Bukti / Nota (Opsional)</label>
+            <input id="cash-photo" value="${esc(existing?.photoUrl || "")}" placeholder="URL foto atau pilih file di bawah..." class="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-xs mb-2" />
+            <input type="file" accept="image/*" onchange="window.handleImageUpload(this, 'cash-photo')" class="text-xs text-slate-500" />
+          </div>
+          ${existing ? `
+            <div>
+              <label class="block text-xs font-bold text-amber-800 mb-1">Alasan Perubahan / Koreksi (Wajib)</label>
+              <input id="cash-edit-reason" required placeholder="Contoh: Salah ketik nominal belanja" class="w-full px-3.5 py-2.5 rounded-xl border border-amber-300 bg-amber-50/60 text-sm" />
+            </div>
+          ` : ""}
+          <button type="submit" class="btn-micro w-full py-3 rounded-xl ${type === 'in' ? 'bg-emerald-600' : 'bg-rose-600'} text-white font-bold text-sm">
+            ${existing ? "Simpan Perubahan Kas" : "Simpan Data Kas"}
+          </button>
+        </form>
+      `);
+    };
+
+    window.saveCash = async (e, type, editId = "") => {
+      e.preventDefault();
+      const baseData = {
+        type,
+        title: document.getElementById("cash-title").value.trim(),
+        amount: Number(document.getElementById("cash-amount").value),
+        note: document.getElementById("cash-note").value.trim(),
+        photoUrl: document.getElementById("cash-photo").value.trim()
+      };
+      if (editId) {
+        const reason = document.getElementById("cash-edit-reason")?.value.trim() || "Koreksi data";
+        await dbUpdate("cash_flows", editId, { ...baseData, editReason: reason });
+        showToast("Catatan Kas Diperbarui", `Alasan: ${reason}`, "info");
+      } else {
+        await dbAdd("cash_flows", {
+          ...baseData,
+          status: "active",
+          recordedBy: state.user.fullName,
+          date: todayIso(),
+          createdAt: new Date().toISOString()
+        });
+        showToast("Data Kas Tersimpan", `${baseData.title} (${rp(baseData.amount)})`);
+      }
+      window.closeModal();
+      render();
+    };
+
+    window.cancelCash = (id) => {
+      showReasonDialog({
+        title: "Batalkan Catatan Kas",
+        subtitle: "Masukkan alasan pembatalan catatan kas ini.",
+        placeholder: "Contoh: Transaksi kas batal dilakukan",
+        confirmText: "Batalkan Kas",
+        onSubmit: async (reason) => {
+          await dbUpdate("cash_flows", id, { status: "cancelled", cancelReason: reason });
+          showToast("Catatan Kas Dibatalkan", `Alasan: ${reason}`, "warning");
+          render();
+        }
+      });
+    };
+
+    window.getAvailableDailyBalance = () => {
+      const totalSalesAll = state.transactions.filter(t => t.status !== "cancelled").reduce((s, t) => s + Number(t.total || 0), 0);
+      const activeManualDaily = state.cashFlows.filter(c => c.status !== "cancelled" && !c.trxId);
+      const totalIn = totalSalesAll + activeManualDaily.filter(c => c.type === "in").reduce((s, c) => s + Number(c.amount || 0), 0);
+      const totalOut = state.cashFlows.filter(c => c.status !== "cancelled" && c.type === "out").reduce((s, c) => s + Number(c.amount || 0), 0);
+      return totalIn - totalOut;
+    };
+
+    window.openMutateToOwnerModal = () => {
+      const avail = Math.max(0, window.getAvailableDailyBalance());
+      openModal(`
+        <form onsubmit="window.executeMutateToOwner(event)" class="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+          <div class="flex justify-between items-center">
+            <h3 class="font-extrabold text-base text-slate-900">Mutasi Saldo Kas Harian ke Kas Utama</h3>
+            <button type="button" onclick="window.closeModal()" class="p-1.5 rounded-xl bg-slate-100"><i data-lucide="x" class="w-4 h-4"></i></button>
+          </div>
+          <div class="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-between">
+            <span class="text-xs font-bold text-emerald-900">Sisa Saldo Kas Harian</span>
+            <span class="text-base font-extrabold text-emerald-700 tabular-nums">${rp(avail)}</span>
+          </div>
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="text-xs font-bold text-slate-700">Jumlah Nominal Mutasi (Rp)</label>
+              <button type="button" onclick="document.getElementById('mut-amount').value = ${avail}" class="text-[11px] font-bold text-indigo-600 hover:underline">Mutasi Semua</button>
+            </div>
+            <input id="mut-amount" type="number" required min="1" max="${avail}" value="${avail > 0 ? avail : ''}" placeholder="Masukkan nominal mutasi" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm font-extrabold tabular-nums" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Tujuan Akun Kas Utama</label>
+            <input id="mut-account" value="Rekening Utama Owner" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Keterangan Mutasi</label>
+            <input id="mut-title" required value="Mutasi Saldo Kas Harian ke Kas Utama" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm" />
+          </div>
+          <button type="submit" class="btn-micro w-full py-3 rounded-xl bg-indigo-600 text-white font-bold text-sm shadow-lg flex items-center justify-center gap-2">
+            <i data-lucide="arrow-right-left" class="w-4 h-4"></i> Proses Mutasi Saldo
+          </button>
+        </form>
+      `);
+    };
+
+    window.executeMutateToOwner = async (e) => {
+      e.preventDefault();
+      const avail = Math.max(0, window.getAvailableDailyBalance());
+      const amount = Number(document.getElementById("mut-amount").value);
+      const accountName = document.getElementById("mut-account").value.trim() || "Rekening Utama Owner";
+      const title = document.getElementById("mut-title").value.trim() || "Mutasi Saldo Kas Harian ke Kas Utama";
+
+      if (amount <= 0) return showToast("Nominal Tidak Valid", "Masukkan nominal mutasi lebih dari Rp 0.", "error");
+      if (amount > avail) return showToast("Saldo Tidak Cukup", `Maksimal saldo yang dapat dimutasi adalah ${rp(avail)}.`, "error");
+
+      const mutId = "MUT-" + Date.now();
+      const nowIso = new Date().toISOString();
+      const today = todayIso();
+
+      await dbAdd("cash_flows", {
+        mutationId: mutId,
+        type: "out",
+        title: `Mutasi ke Kas Utama (${accountName})`,
+        amount,
+        note: title,
+        photoUrl: "",
+        status: "active",
+        recordedBy: state.user.fullName,
+        date: today,
+        createdAt: nowIso
+      });
+
+      await dbAdd("owner_cash_flows", {
+        mutationId: mutId,
+        type: "in",
+        category: "Mutasi Kas Harian",
+        accountName,
+        title,
+        amount,
+        photoUrl: "",
+        status: "active",
+        recordedBy: state.user.fullName,
+        date: today,
+        createdAt: nowIso
+      });
+
+      window.closeModal();
+      showToast("Mutasi Saldo Berhasil", `${rp(amount)} dipindahkan dari Kas Harian ke Kas Utama Owner.`);
+      render();
+    };
+
+    window.setOwnerCashFilter = (f) => { state.ownerCashFilter = f; render(); };
+    window.setOwnerCashSearch = (q) => { state.ownerCashSearch = q; render(); };
+    window.setOwnerPeriodMode = (m) => { state.ownerPeriodMode = m; render(); };
+    window.setOwnerPeriodVal = (field, val) => {
+      if (field === "start") state.ownerDateStart = val;
+      if (field === "end") state.ownerDateEnd = val;
+      if (field === "month") state.ownerMonth = val;
+      if (field === "year") state.ownerYear = val;
+      render();
+    };
+
+    window.openOwnerCashModal = (type, editId = null, presetAmount = null) => {
+      const existing = editId ? state.ownerCashFlows.find(x => x.id === editId) : null;
+      const catsIn = ["Setoran Omzet", "Modal Tambahan", "Investasi / Lainnya"];
+      const catsOut = ["Belanja Stok Besar", "Gaji Karyawan", "Sewa & Utilitas", "Prive Owner", "Lainnya"];
+      const cats = type === "in" ? catsIn : catsOut;
+
+      openModal(`
+        <form onsubmit="window.saveOwnerCash(event, '${type}', '${editId || ''}')" class="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+          <div class="flex justify-between items-center">
+            <h3 class="font-extrabold text-base">${existing ? "Edit Mutasi Kas Utama" : (type === 'in' ? 'Catat Pemasukan Kas Utama' : 'Catat Pengeluaran Kas Utama')}</h3>
+            <button type="button" onclick="window.closeModal()" class="p-1.5 rounded-xl bg-slate-100"><i data-lucide="x" class="w-4 h-4"></i></button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-bold mb-1">Kategori</label>
+              <select id="oc-cat" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold">
+                ${cats.map(c => `<option value="${c}" ${existing?.category === c ? "selected" : ""}>${c}</option>`).join("")}
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-bold mb-1">Sumber / Tujuan Akun</label>
+              <input id="oc-acc" value="${esc(existing?.accountName || "Rekening Utama Owner")}" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-xs" />
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Keterangan Mutasi</label>
+            <input id="oc-title" required value="${esc(existing?.title || (presetAmount ? "Setoran Omzet ke Kas Utama" : ""))}" placeholder="Contoh: Setoran omzet harian" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Nominal (Rp)</label>
+            <input id="oc-amount" type="number" required min="1" value="${existing?.amount ?? presetAmount ?? ""}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm font-bold" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Foto Bukti Transfer / Nota (Opsional)</label>
+            <input id="oc-photo" value="${esc(existing?.photoUrl || "")}" placeholder="URL gambar atau upload file..." class="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-xs mb-2" />
+            <input type="file" accept="image/*" onchange="window.handleImageUpload(this, 'oc-photo')" class="text-xs text-slate-500" />
+          </div>
+          ${existing ? `
+            <div>
+              <label class="block text-xs font-bold text-amber-800 mb-1">Alasan Perubahan (Wajib)</label>
+              <input id="oc-edit-reason" required placeholder="Tuliskan alasan perubahan data..." class="w-full px-3.5 py-2.5 rounded-xl border border-amber-300 bg-amber-50/60 text-sm" />
+            </div>
+          ` : ""}
+          <button type="submit" class="btn-micro w-full py-3 rounded-xl ${type === 'in' ? 'bg-emerald-600' : 'bg-rose-600'} text-white font-bold text-sm">
+            ${existing ? "Simpan Perubahan" : "Simpan ke Kas Utama"}
+          </button>
+        </form>
+      `);
+    };
+
+    window.saveOwnerCash = async (e, type, editId = "") => {
+      e.preventDefault();
+      const baseData = {
+        type,
+        category: document.getElementById("oc-cat").value,
+        accountName: document.getElementById("oc-acc").value.trim(),
+        title: document.getElementById("oc-title").value.trim(),
+        amount: Number(document.getElementById("oc-amount").value),
+        photoUrl: document.getElementById("oc-photo").value.trim()
+      };
+      if (editId) {
+        const reason = document.getElementById("oc-edit-reason")?.value.trim() || "Koreksi Owner";
+        await dbUpdate("owner_cash_flows", editId, { ...baseData, editReason: reason });
+        showToast("Kas Utama Diperbarui", `Alasan: ${reason}`, "info");
+      } else {
+        await dbAdd("owner_cash_flows", {
+          ...baseData,
+          status: "active",
+          recordedBy: state.user.fullName,
+          date: todayIso(),
+          createdAt: new Date().toISOString()
+        });
+        showToast("Kas Utama Tercatat", `${baseData.title} (${rp(baseData.amount)})`);
+      }
+      window.closeModal();
+      render();
+    };
+
+    window.cancelOrDeleteOwnerCash = (id) => {
+      showReasonDialog({
+        title: "Batalkan Mutasi Kas Utama",
+        subtitle: "Masukkan alasan pembatalan agar tercatat di buku mutasi Owner.",
+        placeholder: "Contoh: Duplikat pencatatan setoran",
+        confirmText: "Batalkan Mutasi",
+        onSubmit: async (reason) => {
+          const target = state.ownerCashFlows.find(x => x.id === id);
+          await dbUpdate("owner_cash_flows", id, { status: "cancelled", cancelReason: reason });
+          if (target && target.mutationId) {
+            const linkedDaily = state.cashFlows.find(c => c.mutationId === target.mutationId && c.status !== "cancelled");
+            if (linkedDaily) {
+              await dbUpdate("cash_flows", linkedDaily.id, { status: "cancelled", cancelReason: `Mutasi Kas Utama dibatalkan: ${reason}` });
+            }
+          }
+          showToast("Mutasi Kas Utama Dibatalkan", `Alasan: ${reason}`, "warning");
+          render();
+        }
+      });
+    };
+
+    window.exportOwnerCashExcel = () => {
+      const list = getFilteredOwnerCash();
+      const rows = [["Tanggal", "Jenis", "Kategori", "Akun", "Keterangan", "Nominal", "Status"]];
+      list.forEach(c => rows.push([c.date, c.type === "in" ? "Pemasukan" : "Pengeluaran", c.category || "Umum", c.accountName || "-", c.title, c.amount, c.status === "cancelled" ? "Dibatalkan" : "Aktif"]));
+      const csv = "\uFEFF" + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `Kas_Utama_Owner_${todayIso()}.csv`;
+      a.click();
+      showToast("Excel Kas Utama Diunduh", "File CSV siap dibuka di Microsoft Excel.");
+    };
+
+    window.printOwnerCashPDF = () => {
+      const list = getFilteredOwnerCash();
+      const activeList = list.filter(c => c.status !== "cancelled");
+      const pIn = activeList.filter(c => c.type === "in").reduce((s, c) => s + Number(c.amount || 0), 0);
+      const pOut = activeList.filter(c => c.type === "out").reduce((s, c) => s + Number(c.amount || 0), 0);
+      const pa = document.getElementById("print-area");
+      pa.classList.remove("hidden");
+      pa.innerHTML = `
+        <div style="font-family:sans-serif;padding:20px;">
+          <h2>Laporan Kas Utama Owner - ${esc(state.settings.businessName)}</h2>
+          <p>Dicetak: ${todayIso()} | Pemasukan: <b>${rp(pIn)}</b> | Pengeluaran: <b>${rp(pOut)}</b> | Saldo Bersih: <b>${rp(pIn - pOut)}</b></p>
+          <table border="1" cellspacing="0" cellpadding="6" style="width:100%;border-collapse:collapse;font-size:12px;">
+            <tr><th>Tanggal</th><th>Jenis</th><th>Kategori</th><th>Keterangan</th><th>Status</th><th style="text-align:right">Nominal</th></tr>
+            ${list.map(c => `<tr><td>${esc(c.date)}</td><td>${c.type === "in" ? "Pemasukan" : "Pengeluaran"}</td><td>${esc(c.category || "-")}</td><td>${esc(c.title)}</td><td>${c.status === "cancelled" ? "Dibatalkan" : "Aktif"}</td><td style="text-align:right">${rp(c.amount)}</td></tr>`).join("")}
+          </table>
+        </div>
+      `;
+      window.print();
+      pa.classList.add("hidden");
+    };
+
+    // LAPORAN ACTIONS
+    window.setReportDate = (which, val) => {
+      if (which === "start") state.reportStart = val;
+      else state.reportEnd = val;
+      render();
+    };
+    window.exportReportExcel = () => {
+      const trx = state.transactions.filter(t => t.status !== "cancelled" && t.date >= state.reportStart && t.date <= state.reportEnd);
+      const rows = [["Invoice", "Tanggal", "Kasir", "Metode", "Total"]];
+      trx.forEach(t => rows.push([t.invoiceNo, t.date, t.cashierName, t.paymentMethod, t.total]));
+      const csv = "\uFEFF" + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `Laporan_${state.reportStart}_sd_${state.reportEnd}.csv`;
+      a.click();
+      showToast("Laporan Excel Diunduh", "File CSV siap dibuka di Microsoft Excel.");
+    };
+    window.exportReportPDF = () => {
+      const trx = state.transactions.filter(t => t.status !== "cancelled" && t.date >= state.reportStart && t.date <= state.reportEnd);
+      const omzet = trx.reduce((s, t) => s + Number(t.total || 0), 0);
+      const pa = document.getElementById("print-area");
+      pa.classList.remove("hidden");
+      pa.innerHTML = `
+        <div style="font-family:sans-serif;padding:20px;">
+          <h2>Laporan Usaha - ${esc(state.settings.businessName)}</h2>
+          <p>Periode: ${state.reportStart} s/d ${state.reportEnd} | Total Omzet: <b>${rp(omzet)}</b></p>
+          <table border="1" cellspacing="0" cellpadding="6" style="width:100%;border-collapse:collapse;font-size:12px;">
+            <tr><th>Invoice</th><th>Tanggal</th><th>Kasir</th><th>Metode</th><th>Total</th></tr>
+            ${trx.map(t => `<tr><td>${esc(t.invoiceNo)}</td><td>${esc(t.date)}</td><td>${esc(t.cashierName)}</td><td>${esc(t.paymentMethod)}</td><td>${rp(t.total)}</td></tr>`).join("")}
+          </table>
+        </div>
+      `;
+      window.print();
+      pa.classList.add("hidden");
+    };
+    window.sendReportWhatsApp = () => {
+      const trx = state.transactions.filter(t => t.status !== "cancelled" && t.date >= state.reportStart && t.date <= state.reportEnd);
+      const omzet = trx.reduce((s, t) => s + Number(t.total || 0), 0);
+      const txt = encodeURIComponent(
+        `*LAPORAN USAHA ${state.settings.businessName.toUpperCase()}*\n` +
+        `Periode: ${state.reportStart} s/d ${state.reportEnd}\n` +
+        `Jumlah Transaksi: ${trx.length}\nTotal Omzet: *${rp(omzet)}*`
+      );
+      window.open(`https://wa.me/${(state.settings.whatsappOwner || "").replace(/\D/g, "")}?text=${txt}`, "_blank");
+      showToast("Pesan Laporan Terkirim", "Membuka WhatsApp untuk mengirim ringkasan laporan.");
+    };
+
+    // MANAJEMEN DATA & BACKUP ACTIONS
+    function formatBytes(bytes) {
+      const b = Number(bytes || 0);
+      if (b < 1024) return b + " B";
+      if (b < 1024 * 1024) return (b / 1024).toFixed(2) + " KB";
+      if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(2) + " MB";
+      return (b / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+    }
+
+    function calculateDatabaseUsage() {
+      const encoder = new TextEncoder();
+      const byteLen = (obj) => encoder.encode(JSON.stringify(obj || [])).length;
+      const breakdown = [
+        { label: "Transaksi Penjualan", count: state.transactions.length, bytes: byteLen(state.transactions), color: "bg-rose-500" },
+        { label: "Kas Harian", count: state.cashFlows.length, bytes: byteLen(state.cashFlows), color: "bg-amber-500" },
+        { label: "Kas Utama Owner", count: state.ownerCashFlows.length, bytes: byteLen(state.ownerCashFlows), color: "bg-indigo-500" },
+        { label: "Menu & Kategori", count: state.menus.length + state.categories.length, bytes: byteLen(state.menus) + byteLen(state.categories), color: "bg-emerald-500" },
+        { label: "Pengguna & Pengaturan", count: state.users.length + 1, bytes: byteLen(state.users) + byteLen(state.settings), color: "bg-blue-500" }
+      ];
+      const usedBytes = breakdown.reduce((s, x) => s + x.bytes, 0);
+      const totalQuotaBytes = IS_PREVIEW ? (50 * 1024 * 1024) : (1024 * 1024 * 1024);
+      const freeBytes = Math.max(0, totalQuotaBytes - usedBytes);
+      const usedPercent = Math.min(100, Number(((usedBytes / totalQuotaBytes) * 100).toFixed(3)));
+      return { breakdown, usedBytes, freeBytes, totalQuotaBytes, usedPercent };
+    }
+
+    window.saveBackupFolderLink = async () => {
+      const urlVal = document.getElementById("backup-folder-url")?.value.trim() || "";
+      await dbSaveSettings({ backupFolderUrl: urlVal });
+      showToast("Link Folder Disimpan", urlVal ? "Tujuan folder penyimpanan backup berhasil diperbarui." : "Link folder dikosongkan.", "success");
+      render();
+    };
+
+    window.runDatabaseBackup = async () => {
+      const inputUrl = document.getElementById("backup-folder-url")?.value.trim();
+      const folderUrl = inputUrl !== undefined ? inputUrl : (state.settings.backupFolderUrl || "");
+      state.isBackingUp = true;
+      render();
+
+      const nowStr = new Date().toLocaleString("id-ID");
+      await dbSaveSettings({ backupFolderUrl: folderUrl, lastBackupAt: nowStr });
+
+      const payload = {
+        appName: state.settings.businessName,
+        exportedAt: new Date().toISOString(),
+        backupFolderUrl: folderUrl,
+        settings: state.settings,
+        categories: state.categories,
+        menus: state.menus,
+        transactions: state.transactions,
+        cashFlows: state.cashFlows,
+        ownerCashFlows: state.ownerCashFlows,
+        users: state.users
+      };
+
+      const jsonStr = JSON.stringify(payload, null, 2);
+      const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8;" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `Backup_${(state.settings.businessName || "Usaha").replace(/\s+/g, "_")}_${todayIso()}.json`;
+      a.click();
+
+      setTimeout(() => {
+        state.isBackingUp = false;
+        render();
+        if (folderUrl) {
+          window.open(folderUrl, "_blank", "noopener,noreferrer");
+          showToast("Backup Berhasil & Folder Dibuka", "File backup telah diunduh dan folder tujuan dibuka untuk diunggah.");
+        } else {
+          showToast("Backup Data Berhasil", "File backup JSON berhasil diunduh ke perangkat Anda.");
+        }
+      }, 650);
+    };
+
+    window.restoreDatabaseBackup = (input) => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const parsed = JSON.parse(e.target.result);
+          if (!parsed || (!parsed.transactions && !parsed.menus && !parsed.settings)) {
+            return showToast("File Tidak Valid", "Format file backup JSON tidak dikenali.", "error");
+          }
+          showConfirmDialog({
+            title: "Restore Data dari Backup",
+            message: `Pulihkan data dari backup tanggal ${parsed.exportedAt ? parsed.exportedAt.slice(0, 10) : "-"}? Data saat ini akan diperbarui.`,
+            confirmText: "Ya, Pulihkan Data",
+            danger: false,
+            onConfirm: async () => {
+              if (Array.isArray(parsed.categories)) state.categories = parsed.categories;
+              if (Array.isArray(parsed.menus)) state.menus = parsed.menus;
+              if (Array.isArray(parsed.transactions)) state.transactions = parsed.transactions;
+              if (Array.isArray(parsed.cashFlows)) state.cashFlows = parsed.cashFlows;
+              if (Array.isArray(parsed.ownerCashFlows)) state.ownerCashFlows = parsed.ownerCashFlows;
+              if (Array.isArray(parsed.users)) state.users = parsed.users;
+              if (parsed.settings) await dbSaveSettings(parsed.settings);
+              showToast("Restore Berhasil", "Seluruh data dari file backup telah dipulihkan.");
+              render();
+            }
+          });
+        } catch {
+          showToast("Gagal Membaca File", "Pastikan file yang dipilih adalah file backup .json yang valid.", "error");
+        }
+      };
+      reader.readAsText(file);
+    };
+
+    window.purgeCollection = (colName) => {
+      showConfirmDialog({
+        title: "Bersihkan Seluruh Data",
+        message: `Yakin ingin menghapus SEMUA data pada ${colName}? Tindakan ini tidak dapat dibatalkan.`,
+        confirmText: "Ya, Hapus Semua",
+        onConfirm: async () => {
+          const list = colName === "transactions" ? [...state.transactions] : [...state.cashFlows];
+          for (const item of list) {
+            await dbDelete(colName, item.id);
+          }
+          showToast("Data Dibersihkan", `Seluruh data ${colName} berhasil dihapus.`, "warning");
+          render();
+        }
+      });
+    };
+
+    // PENGGUNA & HAK AKSES
+    window.setUserPage = (p) => { state.userPage = p; render(); };
+    window.selectAdminPerm = (id) => { state.selectedAdminId = id; render(); };
+    window.openUserModal = (editId = null) => {
+      const u = editId ? state.users.find(x => x.id === editId) : null;
+      openModal(`
+        <form onsubmit="window.saveUser(event, '${editId || ''}')" class="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+          <div class="flex justify-between items-center">
+            <h3 class="font-extrabold text-base">${u ? "Edit Pengguna Admin" : "Tambah Pengguna Admin"}</h3>
+            <button type="button" onclick="window.closeModal()" class="p-1.5 rounded-xl bg-slate-100"><i data-lucide="x" class="w-4 h-4"></i></button>
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Username</label>
+            <input id="usr-username" required value="${esc(u?.username || "")}" class="w-full px-3.5 py-2.5 rounded-xl border text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Nama Lengkap (Tercetak di Struk)</label>
+            <input id="usr-fullname" required value="${esc(u?.fullName || "")}" class="w-full px-3.5 py-2.5 rounded-xl border text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold mb-1">Password</label>
+            <input id="usr-pass" required value="${esc(u?.password || "")}" class="w-full px-3.5 py-2.5 rounded-xl border text-sm" />
+          </div>
+          <button type="submit" class="btn-micro w-full py-3 rounded-xl theme-gradient-btn text-white font-bold text-sm">Simpan Pengguna</button>
+        </form>
+      `);
+    };
+    window.saveUser = async (e, editId) => {
+      e.preventDefault();
+      const data = {
+        username: document.getElementById("usr-username").value.trim(),
+        fullName: document.getElementById("usr-fullname").value.trim(),
+        password: document.getElementById("usr-pass").value,
+        role: "Admin"
+      };
+      if (editId) {
+        await dbUpdate("users", editId, data);
+      } else {
+        const created = await dbAdd("users", {
+          ...data,
+          status: "Aktif",
+          templateName: "Kasir (Operasional)",
+          permissions: { ...ACCESS_TEMPLATES["Kasir (Operasional)"] }
+        });
+        state.selectedAdminId = created.id;
+      }
+      window.closeModal();
+      showToast("Pengguna Tersimpan", `Akun ${data.username} berhasil disimpan.`);
+      render();
+    };
+    window.deleteUser = (id) => {
+      showConfirmDialog({
+        title: "Hapus Pengguna Admin",
+        message: "Yakin ingin menghapus akun pengguna ini?",
+        confirmText: "Ya, Hapus",
+        onConfirm: async () => {
+          await dbDelete("users", id);
+          if (state.selectedAdminId === id) state.selectedAdminId = state.users[0]?.id || null;
+          showToast("Pengguna Dihapus", "", "warning");
+          render();
+        }
+      });
+    };
+    window.toggleAdminStatus = async (id, checked) => {
+      const status = checked ? "Aktif" : "Nonaktif";
+      await dbUpdate("users", id, { status });
+      showToast("Status Diperbarui", `Akun kini ${status}.`, "info");
+      render();
+    };
+    window.applyTemplateToAdmin = async (id) => {
+      const tpl = document.getElementById("perm-template-select")?.value;
+      if (!tpl || !ACCESS_TEMPLATES[tpl]) return showToast("Pilih Template", "Gunakan salah satu template baku.", "info");
+      await dbUpdate("users", id, { templateName: tpl, permissions: { ...ACCESS_TEMPLATES[tpl] } });
+      showToast("Template Diterapkan", `Izin diubah ke ${tpl}.`);
+      render();
+    };
+    window.resetAdminPerms = async (id) => {
+      const empty = Object.fromEntries(PERMISSION_GROUPS.flatMap(g => g.items.map(i => [i.key, false])));
+      await dbUpdate("users", id, { templateName: "Kustom (Manual)", permissions: empty });
+      showToast("Izin Direset", "Semua checklist izin dikosongkan.", "warning");
+      render();
+    };
+    window.saveAdminPerms = async (id) => {
+      const perms = {};
+      document.querySelectorAll("[data-perm-key]").forEach(cb => {
+        perms[cb.getAttribute("data-perm-key")] = cb.checked;
+      });
+      await dbUpdate("users", id, { templateName: "Kustom (Manual)", permissions: perms });
+      showToast("Hak Akses Disimpan", "Perubahan izin Admin berhasil diperbarui.");
+      render();
+    };
+
+    // PENGATURAN SISTEM
+    window.saveSystemSettings = async (e) => {
+      e.preventDefault();
+      const methods = Array.from(document.querySelectorAll('input[name="pay_methods"]:checked')).map(c => c.value);
+      const themeEl = document.querySelector('input[name="themeColor"]:checked');
+      await dbSaveSettings({
+        businessName: document.getElementById("set-name").value.trim(),
+        whatsappOwner: document.getElementById("set-wa").value.trim(),
+        logoUrl: document.getElementById("set-logo-url").value.trim(),
+        qrisImageUrl: document.getElementById("set-qris-url").value.trim(),
+        bankInfo: document.getElementById("set-bank").value.trim(),
+        ewalletInfo: document.getElementById("set-ewallet").value.trim(),
+        autoSendReceiptWa: Boolean(document.getElementById("set-auto-wa")?.checked),
+        receiptShowLogo: Boolean(document.getElementById("set-receipt-logo")?.checked),
+        receiptShowCashier: Boolean(document.getElementById("set-receipt-cashier")?.checked),
+        receiptHeaderName: document.getElementById("set-receipt-header")?.value.trim() || document.getElementById("set-name").value.trim(),
+        receiptAddress: document.getElementById("set-receipt-addr")?.value.trim() || "",
+        receiptFooter: document.getElementById("set-receipt-footer")?.value.trim() || "Terima Kasih Sudah Berbelanja!",
+        paymentMethods: methods.length ? methods : ["Tunai"],
+        themeColor: themeEl ? themeEl.value : state.settings.themeColor
+      });
+      showToast("Pengaturan Disimpan", "Identitas usaha, struk & tema berhasil diperbarui.");
+      render();
+    };
+
+    // RENDER ENGINE & AUTO-ROLLOVER TANGGAL
+    function render() {
+      const root = document.getElementById("main-view");
+      if (!root) return;
+      root.innerHTML = state.user ? renderAppShell() : renderLogin();
+      safeIcons();
+    }
+
     let _activeDateStr = todayIso();
     setInterval(() => {
       const nowDate = todayIso();
@@ -1784,25 +2636,20 @@
       }
     }, 30000);
 
-    function render() {
-      const root = document.getElementById("main-view");
-      if (!root) return;
-      root.innerHTML = state.user ? renderAppShell() : renderLogin();
-      safeIcons();
+    async function boot() {
+      if (IS_PREVIEW) {
+        loadPreviewData();
+      } else {
+        await initFirebaseIfProd();
+      }
+      applyTheme(state.settings.themeColor);
+      render();
     }
 
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", async () => {
-        if (IS_PREVIEW) loadPreviewData(); else await initFirebaseIfProd();
-        applyTheme(state.settings.themeColor);
-        render();
-      });
+      document.addEventListener("DOMContentLoaded", boot);
     } else {
-      (async function boot() {
-        if (IS_PREVIEW) loadPreviewData(); else await initFirebaseIfProd();
-        applyTheme(state.settings.themeColor);
-        render();
-      })();
+      boot();
     }
   </script>
 </body>
